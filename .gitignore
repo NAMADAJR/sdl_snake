@@ -1,0 +1,10 @@
+
+snake
+snake.exe
+
+*.o
+*.obj
+*.exe
+
+*.swp
+*.vscode/
