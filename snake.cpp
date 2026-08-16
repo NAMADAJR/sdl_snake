@@ -5,6 +5,9 @@
 #include <ctime>
 #include <string>
 
+#include "neural_net.h"
+#include "ai_vision.h"
+
 using namespace std;
 
 const int SCREEN_WIDTH = 600;
@@ -21,6 +24,45 @@ enum GameState { MENU, PLAYING, GAME_OVER, EXIT };
 struct Segment {
     int x, y;
 };
+
+// ---------- AI ----------
+// The trained network expects the same 11 -> 16 -> 3 shape used in train.cpp.
+NeuralNet aiNet(NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+bool aiWeightsLoaded = false;
+bool aiMode = false;
+
+snakecore::Direction toCoreDir(Direction d) {
+    switch (d) {
+        case UP: return snakecore::UP;
+        case DOWN: return snakecore::DOWN;
+        case LEFT: return snakecore::LEFT;
+        default: return snakecore::RIGHT;
+    }
+}
+
+Direction toLocalDir(snakecore::Direction d) {
+    switch (d) {
+        case snakecore::UP: return UP;
+        case snakecore::DOWN: return DOWN;
+        case snakecore::LEFT: return LEFT;
+        default: return RIGHT;
+    }
+}
+
+// Mirrors the live game into a snakecore::GameState so we can reuse the
+// exact same input-encoding the network was trained on.
+Direction aiChooseDirection(const vector<Segment>& snake, int foodX, int foodY, Direction dir) {
+    snakecore::GameState gs;
+    for (auto& s : snake) gs.snake.push_back({s.x, s.y});
+    gs.foodX = foodX;
+    gs.foodY = foodY;
+    gs.dir = toCoreDir(dir);
+
+    auto inputs = getInputs(gs);
+    auto out = aiNet.forward(inputs);
+    int action = NeuralNet::argmax(out);
+    return toLocalDir(outputToDirection(action, gs.dir));
+}
 
 // ---------- TEXT ----------
 void drawText(SDL_Renderer* renderer, TTF_Font* font,
@@ -108,11 +150,33 @@ int main(int argc, char* argv[]) {
                 // ===== MENU =====
                 if (state == MENU) {
 
-                    if (event.key.keysym.sym == SDLK_1)
+                    if (event.key.keysym.sym == SDLK_1) {
+                        aiMode = false;
+                        resetGame(snake, foodX, foodY, score, speed, dir);
                         state = PLAYING;
+                    }
 
                     if (event.key.keysym.sym == SDLK_2)
                         state = EXIT;
+
+                    if (event.key.keysym.sym == SDLK_3) {
+                        std::cout << "[AI] Program compiled for "
+                                  << NN_INPUT_SIZE << "-" << NN_HIDDEN_SIZE << "-" << NN_OUTPUT_SIZE
+                                  << " network. Attempting to load best_weights.txt...\n";
+                        aiWeightsLoaded = aiNet.loadFromFile("best_weights.txt");
+                        if (aiWeightsLoaded) {
+                            std::cout << "[AI] Weights loaded successfully.\n";
+                            aiMode = true;
+                            resetGame(snake, foodX, foodY, score, speed, dir);
+                            speed = 80; // watchable pace regardless of trained difficulty ramp
+                            state = PLAYING;
+                        } else {
+                            std::cout << "[AI] FAILED to load best_weights.txt "
+                                      << "(missing file, wrong working directory, "
+                                      << "or its header doesn't match "
+                                      << NN_INPUT_SIZE << " " << NN_HIDDEN_SIZE << " " << NN_OUTPUT_SIZE << ").\n";
+                        }
+                    }
                 }
 
                 // ===== PLAYING =====
@@ -151,6 +215,9 @@ int main(int argc, char* argv[]) {
 
         // ---------- UPDATE ----------
         if (state == PLAYING) {
+
+            if (aiMode)
+                dir = aiChooseDirection(snake, foodX, foodY, dir);
 
             for (int i = snake.size() - 1; i > 0; i--)
                 snake[i] = snake[i - 1];
@@ -207,6 +274,10 @@ int main(int argc, char* argv[]) {
             drawText(renderer, font,
                      "2 - QUIT",
                      220, 300);
+
+            drawText(renderer, font,
+                     "3 - AI PLAY",
+                     220, 350);
         }
 
         // ===== PLAYING =====
@@ -253,7 +324,7 @@ int main(int argc, char* argv[]) {
             SDL_RenderFillRect(renderer, &foodRect);
 
             drawText(renderer, font,
-                     "Score: " + to_string(score),
+                     (aiMode ? "AI - Score: " : "Score: ") + to_string(score),
                      10, 10);
         }
 

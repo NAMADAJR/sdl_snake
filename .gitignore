@@ -1,6 +1,8 @@
 
 snake
 snake.exe
+snake_game
+train
 
 *.o
 *.obj
