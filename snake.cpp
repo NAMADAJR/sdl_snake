@@ -26,7 +26,6 @@ struct Segment {
 };
 
 // ---------- AI ----------
-// The trained network expects the same 11 -> 16 -> 3 shape used in train.cpp.
 NeuralNet aiNet(NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
 bool aiWeightsLoaded = false;
 bool aiMode = false;
@@ -60,8 +59,7 @@ Direction aiChooseDirection(const vector<Segment>& snake, int foodX, int foodY, 
 
     auto inputs = getInputs(gs);
     auto out = aiNet.forward(inputs);
-    int action = NeuralNet::argmax(out);
-    return toLocalDir(outputToDirection(action, gs.dir));
+    return toLocalDir(chooseSafeDirection(gs, out));
 }
 
 // ---------- TEXT ----------
@@ -83,6 +81,24 @@ void drawText(SDL_Renderer* renderer, TTF_Font* font,
     SDL_DestroyTexture(texture);
 }
 
+// ---------- FOOD ----------
+// Spawns food on a random free cell, retrying until it finds one not
+// occupied by any part of the snake.
+void spawnFood(const vector<Segment>& snake, int& foodX, int& foodY) {
+    int x, y;
+    bool onSnake;
+    do {
+        x = rand() % GRID_WIDTH;
+        y = rand() % GRID_HEIGHT;
+        onSnake = false;
+        for (auto& s : snake) {
+            if (s.x == x && s.y == y) { onSnake = true; break; }
+        }
+    } while (onSnake);
+    foodX = x;
+    foodY = y;
+}
+
 // ---------- RESET GAME ----------
 void resetGame(vector<Segment>& snake,
                int& foodX, int& foodY,
@@ -94,8 +110,7 @@ void resetGame(vector<Segment>& snake,
 
     dir = RIGHT;
 
-    foodX = rand() % GRID_WIDTH;
-    foodY = rand() % GRID_HEIGHT;
+    spawnFood(snake, foodX, foodY);
 
     score = 0;
     speed = 120;
@@ -246,8 +261,7 @@ int main(int argc, char* argv[]) {
 
                 snake.push_back({foodX, foodY});
 
-                foodX = rand() % GRID_WIDTH;
-                foodY = rand() % GRID_HEIGHT;
+                spawnFood(snake, foodX, foodY);
 
                 score += 10;
 
@@ -276,7 +290,7 @@ int main(int argc, char* argv[]) {
                      220, 300);
 
             drawText(renderer, font,
-                     "3 - AI PLAY",
+                     "3 - WATCH AI PLAY",
                      220, 350);
         }
 

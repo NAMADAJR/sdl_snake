@@ -1,38 +1,50 @@
 #include "snake_core.h"
 #include "neural_net.h"
 #include "ai_vision.h"
+#include "simulate.h"
 #include <algorithm>
 #include <iostream>
 #include <random>
 #include <ctime>
+#include <string>
 
 using namespace snakecore;
 
 const int INPUTS = NN_INPUT_SIZE, HIDDEN = NN_HIDDEN_SIZE, OUTPUTS = NN_OUTPUT_SIZE;
 
 // --- Tune these if training feels too slow or plateaus too fast ---
-int POP_SIZE = 150;          // snakes per generation. Try 50 if this feels heavy.
-int GENERATIONS = 300;       // how many generations to run
+int POP_SIZE = 150;
+int GENERATIONS = 300;
 const double MUTATION_RATE = 0.08;
 const double MUTATION_STRENGTH = 0.3;
-const int ELITE_COUNT = 8;   // top performers copied unchanged into next gen
-const int MAX_STEPS = 2000;  // safety cap per game so a stuck snake can't run forever
+const int ELITE_COUNT = 8;
+const int MAX_STEPS = 2000;
 
-double runGame(NeuralNet& net) {
-    GameState gs;
-    gs.reset();
-    int steps = 0;
-    while (gs.alive && steps < MAX_STEPS) {
-        auto inputs = getInputs(gs);
-        auto out = net.forward(inputs);
-        int action = NeuralNet::argmax(out);
-        Direction newDir = outputToDirection(action, gs.dir);
-        gs.step(newDir);
-        steps++;
+// How many games to average per network per generation. Food placement is
+// random, so a single game's outcome is noisy -- a network can get lucky
+// or unlucky spawns independent of how good it actually is. Averaging
+// over several games smooths that out, so evolution is comparing "genuine
+// skill" rather than "who happened to get an easy food layout this time."
+// Cost scales linearly with this number, so it's a direct speed/accuracy
+// tradeoff -- 3 is a reasonable default; drop to 1 to match old behavior.
+int GAMES_PER_EVAL = 3;
+
+struct EvalResult {
+    double fitness;  // averaged shaped fitness, used for selection
+    double avgScore; // averaged raw food-eaten count, just for display
+};
+
+EvalResult evaluateNetwork(NeuralNet& net) {
+    double totalFitness = 0.0, totalScore = 0.0;
+    for (int i = 0; i < GAMES_PER_EVAL; i++) {
+        GameResult r = simulateGame(net, MAX_STEPS);
+        totalFitness += r.fitness;
+        totalScore += r.score;
     }
-    // Score dominates; steps survived is a tiebreaker so snakes that just
-    // freeze in a "safe" spot don't beat ones that actually eat.
-    return gs.score * 1000.0 + steps;
+    EvalResult e;
+    e.fitness = totalFitness / GAMES_PER_EVAL;
+    e.avgScore = totalScore / GAMES_PER_EVAL;
+    return e;
 }
 
 NeuralNet crossover(const NeuralNet& a, const NeuralNet& b, std::mt19937& rng) {
@@ -82,18 +94,13 @@ int main(int argc, char* argv[]) {
 
     if (haveSeed) {
         std::cout << "Resuming from best_weights.txt\n";
-        // 70% of the population: mutated variants of the current best,
-        // so we build on existing progress instead of discarding it.
         int seededCount = (int)(POP_SIZE * 0.7);
         for (int i = 0; i < seededCount; i++) {
             NeuralNet n = seed;
-            mutate(n, rng); // gentle nudge away from the seed for variety
+            mutate(n, rng);
             population.push_back(n);
         }
-        population.push_back(seed); // keep the untouched original too
-
-        // remaining 30%: fresh random networks, so evolution can still
-        // discover strategies the current best never stumbled into.
+        population.push_back(seed);
         while ((int)population.size() < POP_SIZE) {
             NeuralNet n(INPUTS, HIDDEN, OUTPUTS);
             n.randomize(rng);
@@ -110,7 +117,12 @@ int main(int argc, char* argv[]) {
 
     for (int gen = 0; gen < GENERATIONS; gen++) {
         std::vector<double> fitness(POP_SIZE);
-        for (int i = 0; i < POP_SIZE; i++) fitness[i] = runGame(population[i]);
+        std::vector<double> avgScore(POP_SIZE);
+        for (int i = 0; i < POP_SIZE; i++) {
+            EvalResult e = evaluateNetwork(population[i]);
+            fitness[i] = e.fitness;
+            avgScore[i] = e.avgScore;
+        }
 
         std::vector<int> idx(POP_SIZE);
         for (int i = 0; i < POP_SIZE; i++) idx[i] = i;
@@ -121,15 +133,16 @@ int main(int argc, char* argv[]) {
         for (double f : fitness) avg += f;
         avg /= POP_SIZE;
 
-        std::cout << "Gen " << gen << "  best fitness=" << best
-                  << "  avg=" << avg << std::endl;
+        std::cout << "Gen " << gen
+                  << "  best fitness=" << best
+                  << " (avg score=" << avgScore[idx[0]] << " food over " << GAMES_PER_EVAL << " games)"
+                  << "  pop avg fitness=" << avg << std::endl;
 
         population[idx[0]].saveToFile("best_weights.txt");
 
         std::vector<NeuralNet> next;
         for (int i = 0; i < ELITE_COUNT; i++) next.push_back(population[idx[i]]);
 
-        // pick parents biased toward the top third of the population
         std::uniform_int_distribution<int> pick(0, std::max(1, POP_SIZE / 3) - 1);
         while ((int)next.size() < POP_SIZE) {
             int a = idx[pick(rng)];

@@ -3,6 +3,7 @@ snake
 snake.exe
 snake_game
 train
+evaluate
 
 *.o
 *.obj
